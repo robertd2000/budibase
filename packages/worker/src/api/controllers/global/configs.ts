@@ -12,27 +12,29 @@ import {
 } from "@budibase/backend-core"
 import { checkAnyUserExists } from "../../../utilities/users"
 import {
+  AIConfig,
+  AIInnerConfig,
   Config,
   ConfigType,
   Ctx,
   GetPublicOIDCConfigResponse,
   GetPublicSettingsResponse,
   GoogleInnerConfig,
+  isAIConfig,
   isGoogleConfig,
   isOIDCConfig,
   isSettingsConfig,
   isSMTPConfig,
   OIDCConfigs,
+  OIDCLogosConfig,
+  PASSWORD_REPLACEMENT,
+  QuotaUsageType,
   SettingsBrandingConfig,
   SettingsInnerConfig,
   SSOConfig,
   SSOConfigType,
+  StaticQuotaName,
   UserCtx,
-  OIDCLogosConfig,
-  AIConfig,
-  PASSWORD_REPLACEMENT,
-  isAIConfig,
-  AIInnerConfig,
 } from "@budibase/types"
 import * as pro from "@budibase/pro"
 
@@ -44,9 +46,7 @@ const getEventFns = async (config: Config, existing?: Config) => {
       fns.push(events.email.SMTPCreated)
     } else if (isAIConfig(config)) {
       fns.push(() => events.ai.AIConfigCreated)
-      fns.push(() =>
-        pro.quotas.updateCustomAIConfigCount(Object.keys(config.config).length)
-      )
+      fns.push(() => pro.quotas.addCustomAIConfig())
     } else if (isGoogleConfig(config)) {
       fns.push(() => events.auth.SSOCreated(ConfigType.GOOGLE))
       if (config.config.activated) {
@@ -85,9 +85,12 @@ const getEventFns = async (config: Config, existing?: Config) => {
       fns.push(events.email.SMTPUpdated)
     } else if (isAIConfig(config)) {
       fns.push(() => events.ai.AIConfigUpdated)
-      fns.push(() =>
-        pro.quotas.updateCustomAIConfigCount(Object.keys(config.config).length)
-      )
+      if (
+        Object.keys(existing.config).length > Object.keys(config.config).length
+      ) {
+        fns.push(() => pro.quotas.removeCustomAIConfig())
+      }
+      fns.push(() => pro.quotas.addCustomAIConfig())
     } else if (isGoogleConfig(config)) {
       fns.push(() => events.auth.SSOUpdated(ConfigType.GOOGLE))
       if (!existing.config.activated && config.config.activated) {
@@ -334,32 +337,6 @@ function enrichOIDCLogos(oidcLogos: OIDCLogosConfig) {
   )
 }
 
-async function enrichAIConfig(aiConfig: AIConfig) {
-  // Strip out the API Keys from the response so they don't show in the UI
-  for (const key in aiConfig.config) {
-    if (aiConfig.config[key].apiKey) {
-      aiConfig.config[key].apiKey = PASSWORD_REPLACEMENT
-    }
-  }
-
-  // Return the Budibase AI data source as part of the response if licensing allows
-  const budibaseAIEnabled = await pro.features.isBudibaseAIEnabled()
-  const defaultConfigExists = Object.keys(aiConfig.config).some(
-    key => aiConfig.config[key].isDefault
-  )
-  if (budibaseAIEnabled) {
-    aiConfig.config["budibase_ai"] = {
-      provider: "OpenAI",
-      active: true,
-      isDefault: !defaultConfigExists,
-      defaultModel: env.BUDIBASE_AI_DEFAULT_MODEL || "",
-      name: "Budibase AI",
-    }
-  }
-
-  return aiConfig
-}
-
 export async function find(ctx: UserCtx) {
   try {
     // Find the config with the most granular scope based on context
@@ -367,20 +344,40 @@ export async function find(ctx: UserCtx) {
     let scopedConfig = await configs.getConfig(type)
 
     if (scopedConfig) {
-      if (type === ConfigType.OIDC_LOGOS) {
-        enrichOIDCLogos(scopedConfig)
-      }
-
-      if (type === ConfigType.AI) {
-        await enrichAIConfig(scopedConfig)
-      }
-      ctx.body = scopedConfig
+      await handleConfigType(type, scopedConfig)
+    } else if (type === ConfigType.AI) {
+      scopedConfig = { config: {} } as AIConfig
+      await handleAIConfig(scopedConfig)
     } else {
-      // don't throw an error, there simply is nothing to return
+      // If no config found and not AI type, just return an empty body
       ctx.body = {}
+      return
     }
+
+    ctx.body = scopedConfig
   } catch (err: any) {
     ctx.throw(err?.status || 400, err)
+  }
+}
+
+async function handleConfigType(type: ConfigType, config: Config) {
+  if (type === ConfigType.OIDC_LOGOS) {
+    enrichOIDCLogos(config)
+  } else if (type === ConfigType.AI) {
+    await handleAIConfig(config)
+  }
+}
+
+async function handleAIConfig(config: AIConfig) {
+  await pro.sdk.ai.enrichAIConfig(config)
+  stripApiKeys(config)
+}
+
+function stripApiKeys(config: AIConfig) {
+  for (const key in config?.config) {
+    if (config.config[key].apiKey) {
+      config.config[key].apiKey = PASSWORD_REPLACEMENT
+    }
   }
 }
 
@@ -527,6 +524,13 @@ export async function destroy(ctx: UserCtx) {
   try {
     await db.remove(id, rev)
     await cache.destroy(cache.CacheKey.CHECKLIST)
+    if (id === configs.generateConfigID(ConfigType.AI)) {
+      await pro.quotas.set(
+        StaticQuotaName.AI_CUSTOM_CONFIGS,
+        QuotaUsageType.STATIC,
+        0
+      )
+    }
     ctx.body = { message: "Config deleted successfully" }
   } catch (err: any) {
     ctx.throw(err.status, err)

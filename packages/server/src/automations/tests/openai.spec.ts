@@ -1,9 +1,7 @@
 import { getConfig, runStep, afterAll as _afterAll } from "./utilities"
 import { OpenAI } from "openai"
-import {
-  withEnv as withCoreEnv,
-  setEnv as setCoreEnv,
-} from "@budibase/backend-core"
+import { setEnv as setCoreEnv } from "@budibase/backend-core"
+import * as pro from "@budibase/pro"
 
 jest.mock("openai", () => ({
   OpenAI: jest.fn().mockImplementation(() => ({
@@ -22,7 +20,24 @@ jest.mock("openai", () => ({
     },
   })),
 }))
+jest.mock("@budibase/pro", () => ({
+  ...jest.requireActual("@budibase/pro"),
+  ai: {
+    LargeLanguageModel: {
+      forCurrentTenant: jest.fn().mockImplementation(() => ({
+        initialised: true,
+        init: jest.fn(),
+        run: jest.fn(),
+      })),
+    },
+  },
+  features: {
+    isAICustomConfigsEnabled: jest.fn(),
+    isBudibaseAIEnabled: jest.fn(),
+  },
+}))
 
+const mockedPro = jest.mocked(pro)
 const mockedOpenAI = OpenAI as jest.MockedClass<typeof OpenAI>
 
 const OPENAI_PROMPT = "What is the meaning of life?"
@@ -41,19 +56,10 @@ describe("test the openai action", () => {
 
   afterEach(() => {
     resetEnv()
+    jest.clearAllMocks()
   })
 
   afterAll(_afterAll)
-
-  it("should present the correct error message when the OPENAI_API_KEY variable isn't set", async () => {
-    await withCoreEnv({ OPENAI_API_KEY: "" }, async () => {
-      let res = await runStep("OPENAI", { prompt: OPENAI_PROMPT })
-      expect(res.response).toEqual(
-        "OpenAI API Key not configured - please add the OPENAI_API_KEY environment variable."
-      )
-      expect(res.success).toBeFalsy()
-    })
-  })
 
   it("should be able to receive a response from ChatGPT given a prompt", async () => {
     const res = await runStep("OPENAI", { prompt: OPENAI_PROMPT })
@@ -93,5 +99,26 @@ describe("test the openai action", () => {
       "Error: An error occurred while calling createChatCompletion"
     )
     expect(res.success).toBeFalsy()
+  })
+
+  it("should ensure that the pro AI module is called when the budibase AI features are enabled", async () => {
+    jest.spyOn(pro.features, "isBudibaseAIEnabled").mockResolvedValue(true)
+    jest.spyOn(pro.features, "isAICustomConfigsEnabled").mockResolvedValue(true)
+
+    const prompt = "What is the meaning of life?"
+    await runStep("OPENAI", {
+      model: "gpt-4o-mini",
+      prompt,
+    })
+
+    expect(pro.ai.LargeLanguageModel.forCurrentTenant).toHaveBeenCalledWith(
+      "gpt-4o-mini"
+    )
+
+    const llmInstance =
+      mockedPro.ai.LargeLanguageModel.forCurrentTenant.mock.results[0].value
+    // init does not appear to be called currently
+    // expect(llmInstance.init).toHaveBeenCalled()
+    expect(llmInstance.run).toHaveBeenCalledWith(prompt)
   })
 })

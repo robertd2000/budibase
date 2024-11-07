@@ -24,8 +24,7 @@ import {
   checkExternalTables,
   HOST_ADDRESS,
 } from "./utils"
-import dayjs from "dayjs"
-import { NUMBER_REGEX } from "../utilities"
+import { isDate, NUMBER_REGEX } from "../utilities"
 import { MySQLColumn } from "./base/types"
 import { getReadableErrorMessage } from "./base/errorMapping"
 import { sql } from "@budibase/backend-core"
@@ -129,11 +128,7 @@ export function bindingTypeCoerce(bindings: SqlQueryBinding) {
     }
     // if not a number, see if it is a date - important to do in this order as any
     // integer will be considered a valid date
-    else if (
-      /^\d/.test(binding) &&
-      dayjs(binding).isValid() &&
-      !binding.includes(",")
-    ) {
+    else if (isDate(binding)) {
       let value: any
       value = new Date(binding)
       if (isNaN(value)) {
@@ -241,6 +236,16 @@ class MySQLIntegration extends Sql implements DatasourcePlus {
 
   async connect() {
     this.client = await mysql.createConnection(this.config)
+    const res = await this.internalQuery(
+      {
+        sql: "SELECT VERSION();",
+      },
+      { connect: false }
+    )
+    const version = res?.[0]?.["VERSION()"]
+    if (version?.toLowerCase().includes("mariadb")) {
+      this.setExtendedSqlClient(SqlClient.MARIADB)
+    }
   }
 
   async disconnect() {
@@ -429,8 +434,7 @@ class MySQLIntegration extends Sql implements DatasourcePlus {
         dumpContent.push(createTableStatement)
       }
 
-      const schema = dumpContent.join("\n")
-      return schema
+      return dumpContent.join("\n")
     } finally {
       this.disconnect()
     }

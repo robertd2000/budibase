@@ -139,9 +139,6 @@ globals:
     password: ""
 
   sqs:
-    # -- Whether to use the CouchDB "structured query service" or not. This is disabled by
-    # default for now, but will become the default in a future release.
-    enabled: false
     # @ignore
     url: ""
     # @ignore
@@ -641,7 +638,7 @@ couchdb:
     # @ignore
     repository: budibase/couchdb
     # @ignore
-    tag: v3.3.3
+    tag: v3.3.3-sqs-v2.1.1
     # @ignore
     pullPolicy: Always
 

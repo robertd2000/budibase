@@ -17,7 +17,7 @@ import SchemaBuilder = Knex.SchemaBuilder
 import CreateTableBuilder = Knex.CreateTableBuilder
 
 function isIgnoredType(type: FieldType) {
-  const ignored = [FieldType.LINK, FieldType.FORMULA]
+  const ignored = [FieldType.LINK, FieldType.FORMULA, FieldType.AI]
   return ignored.indexOf(type) !== -1
 }
 
@@ -144,6 +144,9 @@ function generateSchema(
       case FieldType.FORMULA:
         // This is allowed, but nothing to do on the external datasource
         break
+      case FieldType.AI:
+        // This is allowed, but nothing to do on the external datasource
+        break
       case FieldType.ATTACHMENTS:
       case FieldType.ATTACHMENT_SINGLE:
       case FieldType.SIGNATURE_SINGLE:
@@ -210,14 +213,25 @@ function buildDeleteTable(knex: SchemaBuilder, table: Table): SchemaBuilder {
 
 class SqlTableQueryBuilder {
   private readonly sqlClient: SqlClient
+  private extendedSqlClient: SqlClient | undefined
 
   // pass through client to get flavour of SQL
   constructor(client: SqlClient) {
     this.sqlClient = client
   }
 
-  getSqlClient(): SqlClient {
+  getBaseSqlClient(): SqlClient {
     return this.sqlClient
+  }
+
+  getSqlClient(): SqlClient {
+    return this.extendedSqlClient || this.sqlClient
+  }
+
+  // if working in a database like MySQL with many variants (MariaDB)
+  // we can set another client which overrides the base one
+  setExtendedSqlClient(client: SqlClient) {
+    this.extendedSqlClient = client
   }
 
   /**
